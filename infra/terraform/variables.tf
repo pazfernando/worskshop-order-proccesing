@@ -10,6 +10,12 @@ variable "stack_name" {
   default     = "observability-business-case"
 }
 
+variable "resource_prefix" {
+  description = "Optional general prefix added to all named AWS resources."
+  type        = string
+  default     = ""
+}
+
 variable "payment_failure_mode" {
   description = "Failure behavior for the payment simulator Lambda."
   type        = string

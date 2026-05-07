@@ -42,6 +42,7 @@ Caso base para talleres técnicos senior sobre arquitectura serverless, resilien
 ## Variables de despliegue
 
 - `STACK_NAME`: prefijo para los recursos AWS. Default: `observability-business-case`
+- `RESOURCE_PREFIX`: prefijo general opcional para namespacing de recursos. Default en CI/CD: el nombre del environment
 - `AWS_REGION`: región de despliegue. Default: `us-east-1`
 - `PAYMENT_FAILURE_MODE`: `none`, `always_fail`, `random_fail`, `slow_response`, `random_reject`
 - `TF_STATE_BUCKET`: opcional. Si no se define en GitHub Actions, el workflow crea uno automáticamente
@@ -69,6 +70,7 @@ export AWS_REGION="us-east-1"
 
 ```bash
 export STACK_NAME="observability-business-case"
+export RESOURCE_PREFIX="aws-dev"
 export AWS_REGION="us-east-1"
 export PAYMENT_FAILURE_MODE="none"
 ```
@@ -110,6 +112,7 @@ terraform -chdir=infra/terraform init -backend=false
 terraform -chdir=infra/terraform apply \
   -var="aws_region=${AWS_REGION}" \
   -var="stack_name=${STACK_NAME}" \
+  -var="resource_prefix=${RESOURCE_PREFIX}" \
   -var="payment_failure_mode=${PAYMENT_FAILURE_MODE}"
 ```
 
@@ -133,6 +136,7 @@ Las rutas operativas son `${API_BASE_URL}/orders` y `${API_BASE_URL}/orders/{ord
 terraform -chdir=infra/terraform destroy \
   -var="aws_region=${AWS_REGION}" \
   -var="stack_name=${STACK_NAME}" \
+  -var="resource_prefix=${RESOURCE_PREFIX}" \
   -var="payment_failure_mode=${PAYMENT_FAILURE_MODE}"
 ```
 
@@ -155,6 +159,7 @@ Variables:
 
 - `AWS_REGION`
 - `STACK_NAME`
+- `RESOURCE_PREFIX` opcional
 - `PAYMENT_FAILURE_MODE`
 - `TF_STATE_KEY` opcional
 
@@ -164,7 +169,7 @@ En GitHub Actions el backend remoto no es opcional. El runner es efímero, así 
 
 Si `TF_STATE_BUCKET` no está definido, el workflow crea uno automáticamente en la cuenta destino con este patrón:
 
-- `${stack_name}-${account_id}-${aws_region}-tfstate`
+- `${resource_prefix}-${stack_name}-${account_id}-${aws_region}-tfstate`
 
 Luego usa una key por environment:
 
@@ -173,6 +178,10 @@ Luego usa una key por environment:
 En este repositorio, para el environment `aws-dev`, la key por defecto queda:
 
 - `aws-dev/observability-business-case.tfstate`
+
+Y los recursos nombrados quedan con este patrón:
+
+- `${RESOURCE_PREFIX}-${STACK_NAME}-...`
 
 ### Flujo de despliegue
 

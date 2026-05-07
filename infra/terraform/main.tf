@@ -31,7 +31,8 @@ data "archive_file" "lambda_bundle" {
 }
 
 locals {
-  name_prefix                     = var.stack_name
+  normalized_resource_prefix      = trim(var.resource_prefix, "- ")
+  name_prefix                     = local.normalized_resource_prefix != "" ? "${local.normalized_resource_prefix}-${var.stack_name}" : var.stack_name
   orders_table_name               = "${local.name_prefix}-orders"
   create_order_function_name      = "${local.name_prefix}-create-order"
   get_order_function_name         = "${local.name_prefix}-get-order"

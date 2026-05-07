@@ -29,6 +29,7 @@ jobs:
       ENVIRONMENT_NAME: aws-dev
       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'us-east-1' }}
       STACK_NAME: ${{ vars.STACK_NAME != '' && vars.STACK_NAME || 'observability-business-case' }}
+      RESOURCE_PREFIX: ${{ vars.RESOURCE_PREFIX != '' && vars.RESOURCE_PREFIX || 'aws-dev' }}
       PAYMENT_FAILURE_MODE: ${{ inputs.payment_failure_mode != '' && inputs.payment_failure_mode || vars.PAYMENT_FAILURE_MODE || 'none' }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
@@ -64,7 +65,12 @@ jobs:
       - name: Ensure Terraform state bucket
         run: |
           ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-          PROJECT_SLUG="$(printf '%s' "$STACK_NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          EFFECTIVE_STACK_NAME="$STACK_NAME"
+          if [ -n "$RESOURCE_PREFIX" ]; then
+            EFFECTIVE_STACK_NAME="${RESOURCE_PREFIX}-${STACK_NAME}"
+          fi
+
+          PROJECT_SLUG="$(printf '%s' "$EFFECTIVE_STACK_NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
           PROJECT_SLUG="${PROJECT_SLUG#-}"
           PROJECT_SLUG="${PROJECT_SLUG%-}"
 
@@ -108,12 +114,101 @@ jobs:
             -backend-config="key=${TF_STATE_KEY}" \
             -backend-config="region=${AWS_REGION}"
 
+      - name: Reconcile Terraform state
+        run: |
+          tf_has_state() {
+            terraform -chdir=infra/terraform state show "$1" >/dev/null 2>&1
+          }
+
+          tf_import_if_missing() {
+            ADDRESS="$1"
+            IMPORT_ID="$2"
+
+            if tf_has_state "$ADDRESS"; then
+              echo "State already contains $ADDRESS"
+              return 0
+            fi
+
+            echo "Importing $ADDRESS from $IMPORT_ID"
+            terraform -chdir=infra/terraform import "$ADDRESS" "$IMPORT_ID"
+          }
+
+          EFFECTIVE_STACK_NAME="$STACK_NAME"
+          if [ -n "$RESOURCE_PREFIX" ]; then
+            EFFECTIVE_STACK_NAME="${RESOURCE_PREFIX}-${STACK_NAME}"
+          fi
+
+          CREATE_ORDER_FUNCTION_NAME="${EFFECTIVE_STACK_NAME}-create-order"
+          GET_ORDER_FUNCTION_NAME="${EFFECTIVE_STACK_NAME}-get-order"
+          PAYMENT_SIMULATOR_FUNCTION_NAME="${EFFECTIVE_STACK_NAME}-payment-simulator"
+          ORDER_PROCESSOR_FUNCTION_NAME="${EFFECTIVE_STACK_NAME}-order-processor"
+          API_NAME="${EFFECTIVE_STACK_NAME}-http-api"
+          EVENT_RULE_NAME="${EFFECTIVE_STACK_NAME}-order-created"
+
+          for ITEM in \
+            "aws_lambda_function.create_order:${CREATE_ORDER_FUNCTION_NAME}" \
+            "aws_lambda_function.get_order:${GET_ORDER_FUNCTION_NAME}" \
+            "aws_lambda_function.payment_simulator:${PAYMENT_SIMULATOR_FUNCTION_NAME}" \
+            "aws_lambda_function.order_processor:${ORDER_PROCESSOR_FUNCTION_NAME}"
+          do
+            ADDRESS="${ITEM%%:*}"
+            FUNCTION_NAME="${ITEM#*:}"
+
+            if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+              tf_import_if_missing "$ADDRESS" "$FUNCTION_NAME"
+            fi
+          done
+
+          API_ID="$(aws apigatewayv2 get-apis --query "Items[?Name=='${API_NAME}'].ApiId | [0]" --output text)"
+
+          if [ "$API_ID" != "None" ] && [ -n "$API_ID" ]; then
+            CREATE_ORDER_ROUTE_ID="$(aws apigatewayv2 get-routes --api-id "$API_ID" --query "Items[?RouteKey=='POST /orders'].RouteId | [0]" --output text)"
+            GET_ORDER_ROUTE_ID="$(aws apigatewayv2 get-routes --api-id "$API_ID" --query "Items[?RouteKey=='GET /orders/{orderId}'].RouteId | [0]" --output text)"
+
+            if [ "$CREATE_ORDER_ROUTE_ID" != "None" ] && [ -n "$CREATE_ORDER_ROUTE_ID" ]; then
+              tf_import_if_missing "aws_apigatewayv2_route.create_order" "${API_ID}/${CREATE_ORDER_ROUTE_ID}"
+              CREATE_ORDER_TARGET="$(aws apigatewayv2 get-routes --api-id "$API_ID" --query "Items[?RouteId=='${CREATE_ORDER_ROUTE_ID}'].Target | [0]" --output text)"
+              CREATE_ORDER_INTEGRATION_ID="${CREATE_ORDER_TARGET#integrations/}"
+
+              if [ -n "$CREATE_ORDER_INTEGRATION_ID" ] && [ "$CREATE_ORDER_INTEGRATION_ID" != "$CREATE_ORDER_TARGET" ]; then
+                tf_import_if_missing "aws_apigatewayv2_integration.create_order" "${API_ID}/${CREATE_ORDER_INTEGRATION_ID}"
+              fi
+            fi
+
+            if [ "$GET_ORDER_ROUTE_ID" != "None" ] && [ -n "$GET_ORDER_ROUTE_ID" ]; then
+              tf_import_if_missing "aws_apigatewayv2_route.get_order" "${API_ID}/${GET_ORDER_ROUTE_ID}"
+              GET_ORDER_TARGET="$(aws apigatewayv2 get-routes --api-id "$API_ID" --query "Items[?RouteId=='${GET_ORDER_ROUTE_ID}'].Target | [0]" --output text)"
+              GET_ORDER_INTEGRATION_ID="${GET_ORDER_TARGET#integrations/}"
+
+              if [ -n "$GET_ORDER_INTEGRATION_ID" ] && [ "$GET_ORDER_INTEGRATION_ID" != "$GET_ORDER_TARGET" ]; then
+                tf_import_if_missing "aws_apigatewayv2_integration.get_order" "${API_ID}/${GET_ORDER_INTEGRATION_ID}"
+              fi
+            fi
+          fi
+
+          if aws lambda get-policy --function-name "$CREATE_ORDER_FUNCTION_NAME" --query 'Policy' --output text 2>/dev/null | grep -q 'AllowHttpApiInvokeCreateOrder'; then
+            tf_import_if_missing "aws_lambda_permission.allow_api_gateway_create_order" "${CREATE_ORDER_FUNCTION_NAME}/AllowHttpApiInvokeCreateOrder"
+          fi
+
+          if aws lambda get-policy --function-name "$GET_ORDER_FUNCTION_NAME" --query 'Policy' --output text 2>/dev/null | grep -q 'AllowHttpApiInvokeGetOrder'; then
+            tf_import_if_missing "aws_lambda_permission.allow_api_gateway_get_order" "${GET_ORDER_FUNCTION_NAME}/AllowHttpApiInvokeGetOrder"
+          fi
+
+          if aws lambda get-policy --function-name "$ORDER_PROCESSOR_FUNCTION_NAME" --query 'Policy' --output text 2>/dev/null | grep -q 'AllowEventBridgeInvokeOrderProcessor'; then
+            tf_import_if_missing "aws_lambda_permission.allow_eventbridge_order_processor" "${ORDER_PROCESSOR_FUNCTION_NAME}/AllowEventBridgeInvokeOrderProcessor"
+          fi
+
+          if aws events list-targets-by-rule --rule "$EVENT_RULE_NAME" --query "Targets[?Id=='OrderProcessorFunction'].Id | [0]" --output text 2>/dev/null | grep -q 'OrderProcessorFunction'; then
+            tf_import_if_missing "aws_cloudwatch_event_target.order_processor" "${EVENT_RULE_NAME}/OrderProcessorFunction"
+          fi
+
       - name: Deploy stack
         run: |
           terraform -chdir=infra/terraform apply \
             -auto-approve \
             -var="aws_region=${AWS_REGION}" \
             -var="stack_name=${STACK_NAME}" \
+            -var="resource_prefix=${RESOURCE_PREFIX}" \
             -var="payment_failure_mode=${PAYMENT_FAILURE_MODE}"
 
       - name: Show API URL
