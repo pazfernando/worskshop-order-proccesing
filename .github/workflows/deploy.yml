@@ -77,7 +77,23 @@ jobs:
           if [ -n "$TF_STATE_BUCKET" ]; then
             BUCKET_NAME="$TF_STATE_BUCKET"
           else
-            BUCKET_NAME="${PROJECT_SLUG}-${ACCOUNT_ID}-${AWS_REGION}-tfstate"
+            BUCKET_SUFFIX="${ACCOUNT_ID}-${AWS_REGION}-tfstate"
+            MAX_BUCKET_LENGTH=63
+            MAX_PROJECT_SLUG_LENGTH=$((MAX_BUCKET_LENGTH - ${#BUCKET_SUFFIX} - 1))
+            PROJECT_HASH="$(printf '%s' "$PROJECT_SLUG" | shasum -a 256 | cut -c1-8)"
+
+            if [ "$MAX_PROJECT_SLUG_LENGTH" -lt 10 ]; then
+              echo "Unable to derive a valid Terraform state bucket name from STACK_NAME/RESOURCE_PREFIX." >&2
+              exit 1
+            fi
+
+            if [ "${#PROJECT_SLUG}" -gt "$MAX_PROJECT_SLUG_LENGTH" ]; then
+              TRUNCATED_LENGTH=$((MAX_PROJECT_SLUG_LENGTH - 9))
+              PROJECT_SLUG="${PROJECT_SLUG:0:$TRUNCATED_LENGTH}-${PROJECT_HASH}"
+              PROJECT_SLUG="${PROJECT_SLUG%-}"
+            fi
+
+            BUCKET_NAME="${PROJECT_SLUG}-${BUCKET_SUFFIX}"
           fi
 
           STATE_KEY="${TF_STATE_KEY:-${ENVIRONMENT_NAME}/${STACK_NAME}.tfstate}"

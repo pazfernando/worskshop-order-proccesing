@@ -13,7 +13,7 @@ variable "stack_name" {
 variable "resource_prefix" {
   description = "Optional general prefix added to all named AWS resources."
   type        = string
-  default     = ""
+  default     = "fp-ws"
 }
 
 variable "payment_failure_mode" {

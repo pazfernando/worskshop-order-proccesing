@@ -171,6 +171,8 @@ Si `TF_STATE_BUCKET` no está definido, el workflow crea uno automáticamente en
 
 - `${resource_prefix}-${stack_name}-${account_id}-${aws_region}-tfstate`
 
+Si ese nombre excede el límite de 63 caracteres de S3, el workflow lo recorta de forma determinística y agrega un hash corto para mantener unicidad.
+
 Luego usa una key por environment:
 
 - `${environment}/${STACK_NAME}.tfstate`
